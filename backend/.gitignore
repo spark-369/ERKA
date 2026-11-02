@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Testing / coverage / tooling
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# Local runtime data (SQLite DB, embedded Chroma, uploads, HF cache)
+data/
+uploads/
+chroma_data/
+hf_cache/
+logs/
+*.log
+
+# Environment: `.env` is the committed configuration source for this project.
+.env.local
+.env.*.local
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

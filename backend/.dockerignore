@@ -1,0 +1,25 @@
+# Build context hygiene for the backend image.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+# Secrets are injected at runtime (`docker run --env-file backend/.env`),
+# never baked into the image layer.
+.env
+.env.*
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+tests/
+data/
+uploads/
+chroma_data/
+hf_cache/
+*.log
+.git/
+.gitignore
+Dockerfile
+.dockerignore

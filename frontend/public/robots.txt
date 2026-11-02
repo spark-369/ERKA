@@ -1,0 +1,3 @@
+# The console is an authenticated application shell; keep it out of crawlers.
+User-agent: *
+Disallow: /

@@ -1,0 +1,81 @@
+# ===========================================================================
+# Enterprise RAG Knowledge Assistant - Backend dependencies
+#
+# Ranges are used (instead of hard pins) so the image keeps building while
+# still staying inside a single tested minor series.
+# ===========================================================================
+
+# --- Web framework -----------------------------------------------------------
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.34,<0.35
+gunicorn>=23.0,<24.0
+python-multipart>=0.0.20
+websockets>=13.0
+
+# --- Settings & validation ---------------------------------------------------
+pydantic>=2.10,<3.0
+pydantic-settings>=2.7,<3.0
+email-validator>=2.2,<3.0
+
+# --- Relational storage ------------------------------------------------------
+SQLAlchemy>=2.0.36,<2.1
+alembic>=1.14,<2.0
+psycopg2-binary>=2.9.10,<3.0
+
+# --- Security (JWT) ----------------------------------------------------------
+PyJWT>=2.10,<3.0
+bcrypt>=4.2,<5.0
+
+# --- Cache / queue -----------------------------------------------------------
+redis>=5.2,<6.0
+celery>=5.4,<6.0
+
+# --- Vector storage (embedded + persistent, no server required) --------------
+chromadb>=0.5.20,<0.7
+# chromadb declares `posthog>=2.4.0` with NO upper bound, but its telemetry
+# client calls the posthog v2/v3 positional API:
+#     posthog.capture(distinct_id, event_name, properties)
+# posthog >= 4 changed that to `capture(event, **kwargs)`, so an unbounded
+# resolve installs an incompatible major and every Chroma event logs
+# "capture() takes 1 positional argument but 3 were given".
+#
+# The application does not rely on this pin: `app/db/vector_store.py`
+# replaces Chroma's telemetry client with a no-op via
+# `chroma_product_telemetry_impl`, which removes the broken call regardless of
+# the installed posthog version. The cap simply keeps the environment
+# reproducible for anything else that imports chromadb.
+posthog>=2.4,<4.0
+# Imported directly by `app/db/vector_store.py` (Chroma's telemetry base class
+# uses the `overrides` metaclass, which requires @override on the `capture` we
+# replace). Already a chromadb dependency; declared explicitly because we now
+# import it ourselves rather than relying on the transitive pin.
+overrides>=7.3.1
+
+# --- LangChain pipeline (loading / chunking / retriever chains) --------------
+langchain>=0.3,<0.4
+langchain-core>=0.3,<0.4
+langchain-text-splitters>=0.3,<0.4
+langchain-community>=0.3,<0.4
+
+# --- LLM inference layer (Qwen2.5-0.5B via transformers) ---------------------
+transformers>=4.46,<4.50
+tokenizers>=0.20,<0.22
+accelerate>=1.2,<2.0
+sentence-transformers>=3.2,<4.0
+safetensors>=0.4.5
+# Structured output: constrains decoding to a JSON schema (masked logits) so the
+# 0.5B model returns reliable, parseable answers with explicit citations.
+outlines>=1.0,<2.0
+# torch is installed separately in the Dockerfile from the CPU-only index.
+# Local (non-Docker) installs:  pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# --- Document parsing --------------------------------------------------------
+pypdf>=5.1,<6.0
+python-docx>=1.1,<2.0
+beautifulsoup4>=4.12,<5.0
+
+# --- Testing & quality control (Pytest) --------------------------------------
+pytest>=8.3,<9.0
+pytest-asyncio>=0.24,<0.26
+pytest-cov>=6.0,<7.0
+httpx>=0.28,<0.29

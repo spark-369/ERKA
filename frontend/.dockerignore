@@ -1,0 +1,16 @@
+# Build context hygiene for the frontend image.
+node_modules
+.next
+out
+build
+coverage
+# Secrets are injected at build time via --build-arg, never copied in.
+.env
+.env.*
+.git
+.gitignore
+Dockerfile
+.dockerignore
+npm-debug.log*
+*.tsbuildinfo
+.DS_Store
