@@ -42,8 +42,9 @@ RUN pip install -r requirements.txt
 
 # --------------------------------------------------------------- ml caches ---
 # Pre-download the embedding model and the Qwen2.5-0.5B weights so the first
-# request is not slowed down by a cold Hugging Face download. Set
-# PREFETCH_MODELS=false to skip this (smaller build, slower first run).
+# request is not slowed down by a cold Hugging Face download. Weights are stored
+# at full precision here and cast to the runtime dtype (float16) by the provider.
+# Set PREFETCH_MODELS=false to skip this (smaller build, slower first run).
 ARG PREFETCH_MODELS=true
 ARG LLM_MODEL_ID=Qwen/Qwen2.5-0.5B-Instruct
 ARG EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
@@ -104,8 +105,9 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # worker from the same image, e.g.:
 #   celery -A app.workers.worker:celery_app worker --loglevel=info
 #
-# ``--timeout`` must cover a worst-case generation: the full 8192-token answer
-# budget on CPU can take several minutes, and a shorter timeout kills the worker
+# ``--timeout`` must cover a worst-case generation: the full answer
+# budget (LLM_MAX_NEW_TOKENS, up to the 32768-token context window) on CPU can
+# take many minutes, and a shorter timeout kills the worker
 # mid-stream (the client sees a truncated reply). It is also used as the SSE
 # keep-alive budget, so it is generous by design.
 CMD ["gunicorn", "app.main:app", \

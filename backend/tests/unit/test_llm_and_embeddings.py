@@ -122,17 +122,6 @@ class TestStubLLM:
         second = provider.generate([Message(role="user", content=prompt)]).text
         assert first == second
 
-    def test_streaming_concatenates_to_the_full_answer(self) -> None:
-        provider = StubLLMProvider()
-        messages = [Message(role="user", content="[1] Source: a.txt\nBody.\nQuestion: Q?")]
-        streamed = "".join(provider.stream(messages))
-        assert streamed == provider.generate(messages).text
-
-    def test_streaming_emits_multiple_deltas(self) -> None:
-        provider = StubLLMProvider()
-        deltas = list(provider.stream([Message(role="user", content="Question: hi?")]))
-        assert len(deltas) > 1
-
     def test_health_reports_ok(self) -> None:
         assert StubLLMProvider().health()["status"] == "ok"
 

@@ -71,8 +71,7 @@ class TestCompletion:
         # The answer must be grounded: a bare "I do not have enough information"
         # is also a non-empty string, so assert on the retrieved context too.
         assert body["sources"], "answer was not grounded in the knowledge base"
-        # Structured output: the fact lands in a bullet point, not the prose.
-        assert any("30 days" in point for point in body["key_points"])
+        assert "30 days" in body["answer"]
         assert body["conversation_id"] and body["message_id"]
         assert body["latency_ms"] >= 0
         assert body["model_name"] == "stub-extractive-v1"
@@ -112,24 +111,8 @@ class TestCompletion:
         ).json()
         assert body["sources"], "expected citations from the knowledge base"
         assert len(body["sources"]) <= 4  # standard RAG default (k=4)
-        joined = " ".join(body["key_points"])
-        assert "30 days" in joined
-        assert "twenty paid days" in joined
-
-    def test_structured_output_returns_citations(self, client, auth_headers) -> None:
-        """The structured path surfaces citation offsets and a structured flag."""
-        seed_knowledge(
-            client, auth_headers, text="The refund window is 30 days.", name="refunds.txt"
-        )
-        body = client.post(
-            COMPLETIONS,
-            json={"question": "What is the refund window?"},
-            headers=auth_headers,
-        ).json()
-        assert body["structured"] is True
-        assert body["citations"], "expected at least one citation offset"
-        assert all(0 <= offset < len(body["sources"]) for offset in body["citations"])
-        assert any(source["cited"] for source in body["sources"])
+        assert "30 days" in body["answer"]
+        assert "twenty paid days" in body["answer"]
 
     def test_document_scope_restricts_retrieval(self, client, auth_headers) -> None:
         """Passing ``document_ids`` limits retrieval to that document."""
@@ -268,9 +251,8 @@ class TestStreaming:
         tokens = "".join(data["text"] for name, data in events if name == "token")
         done = next(data for name, data in events if name == "done")
         assert tokens.strip() == done["answer"].strip()
-        # The done frame always carries the structured-output contract fields.
+        # The done frame carries the answer metadata.
         assert "citations" in done
-        assert "structured" in done
 
     def test_stream_start_carries_the_model_name(self, client, auth_headers) -> None:
         with client.stream(

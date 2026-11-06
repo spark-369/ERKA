@@ -11,34 +11,21 @@ from typing import Any, Iterable, Sequence
 from app.llm.base import Message
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a knowledgeable enterprise assistant. Answer the user's question "
-    "using ONLY the provided context, in a thorough and well-organised way.\n"
-    "Follow these rules strictly:\n"
-    "1. Write a detailed, comprehensive, self-contained answer in clear prose. "
-    "Open with a direct answer to the question, then explain the relevant "
-    "details, context and specifics (names, numbers, steps, technologies) that "
-    "the sources give. Aim for depth: several paragraphs where the context "
-    "supports it.\n"
-    "2. Never dump or paste the raw context, and never mention 'the context' or "
-    "'the knowledge base'. Do not open with filler such as 'Based on the "
-    "knowledge base'.\n"
-    "3. Cite the sources you actually used with inline bracketed numbers, e.g. "
-    "[1], placed right after the sentence they support.\n"
-    "4. Organise the response for readability: a short opening paragraph, then "
-    "well-structured detail. Use bullet points where they genuinely help.\n"
-    "5. Prefer completeness over brevity: cover every part of the question the "
-    "sources can answer, without padding or repetition. Do not stop early or "
-    "summarise away detail that the sources contain.\n"
-    "6. If the context does not contain the answer, say so plainly and suggest "
-    "which document might help. Never invent details, and preserve technical "
-    "names, identifiers and units exactly as written."
+    "You are a helpful assistant that answers the user's question using only "
+    "the provided context. Give a detailed but clean answer as natural, flowing "
+    "prose in your own words - plain sentences or short paragraphs. Do not use "
+    "numbered lists, bullet points, or headings, and never repeat the same point "
+    "twice. Ignore reference lists, bibliographies, citations, documentation "
+    "titles, source file names, and URLs that appear in the context; never "
+    "present them as part of the answer. Do not begin with phrases such as "
+    "'Based on the information provided' or 'the text states', and do not quote "
+    "the context verbatim. Synthesise the information into a clear explanation "
+    "that directly answers the question."
 )
 
 NO_CONTEXT_PROMPT = (
-    "No relevant context was found in the knowledge base for this question. "
-    "Tell the user that the knowledge base does not contain the information and "
-    "suggest uploading the relevant document. Do not answer from general "
-    "knowledge."
+    "No relevant context was found, so tell the user you cannot answer from the "
+    "knowledge base and suggest uploading the relevant document."
 )
 
 
@@ -49,11 +36,10 @@ class PromptBuilder:
         self,
         *,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
-        #: Generous by default: detailed answers need more grounding context, and
-        #: the structured schema adds the bullet points + citations on top.
-        #: Roughly 8k tokens (~32k chars), which leaves the bulk of the 32k-token
-        #: context window for the answer when the full 8192-token generation
-        #: budget is used.
+        #: Generous by default: detailed, paragraph-length answers need plenty of
+        #: grounding context. Roughly 8k tokens (~32k chars), which leaves the bulk
+        #: of the 32k-token context window for the answer. The provider trims the
+        #: generation budget automatically whenever the prompt leaves less room.
         max_context_chars: int = 32_000,
         max_history_turns: int = 6,
     ) -> None:

@@ -7,6 +7,7 @@
 import Link from "next/link";
 import { CheckIcon } from "@/components/icons";
 import { ThemeSwitcher } from "@/components/shell";
+import { BrandMark } from "@/components/ui";
 
 const HIGHLIGHTS = [
   "Answers grounded in your own documents",
@@ -18,22 +19,26 @@ export default function AuthShell({ title, subtitle, children, footer }) {
   return (
     <div className="flex min-h-screen">
       {/* ------------------------------------------------------ brand panel */}
-      <div className="relative hidden w-1/2 flex-col justify-between bg-slate-900 p-12 text-white lg:flex dark:bg-slate-950">
-        <Link href="/" className="flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-sm font-bold text-slate-900">
+      <div className="relative hidden w-1/2 flex-col justify-between overflow-hidden bg-gradient-to-br from-brand-700 via-brand-800 to-brand-950 p-12 text-white lg:flex">
+        <div
+          className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-brand-500/30 blur-3xl"
+          aria-hidden="true"
+        />
+        <Link href="/" className="relative flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/15 text-sm font-bold text-white backdrop-blur">
             R
           </span>
           <span className="text-sm font-semibold tracking-tight">RAG Assistant</span>
         </Link>
 
-        <div className="flex flex-col gap-6">
+        <div className="relative flex flex-col gap-6">
           <h2 className="max-w-md text-3xl font-semibold tracking-tight text-balance">
             A private knowledge assistant for your domain documents.
           </h2>
           <ul className="flex flex-col gap-3">
             {HIGHLIGHTS.map((item) => (
-              <li key={item} className="flex items-center gap-3 text-sm text-slate-300">
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
+              <li key={item} className="flex items-center gap-3 text-sm text-brand-100">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-300">
                   <CheckIcon className="h-3 w-3" />
                 </span>
                 {item}
@@ -42,19 +47,16 @@ export default function AuthShell({ title, subtitle, children, footer }) {
           </ul>
         </div>
 
-        <p className="text-xs text-slate-500">
-          FastAPI · Celery · ChromaDB · Qwen2.5
+        <p className="relative text-xs text-brand-200">
+          Private · Cited · Runs on your infrastructure
         </p>
       </div>
 
       {/* ------------------------------------------------------------ form */}
       <div className="flex flex-1 flex-col">
         <div className="flex items-center justify-between px-6 py-4 lg:justify-end">
-          <Link
-            href="/"
-            className="text-sm font-semibold tracking-tight lg:hidden"
-          >
-            RAG Assistant
+          <Link href="/" className="lg:hidden">
+            <BrandMark />
           </Link>
           <ThemeSwitcher compact />
         </div>

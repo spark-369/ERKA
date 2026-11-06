@@ -19,6 +19,7 @@ import {
   CardHeader,
   Input,
   Modal,
+  PageHeader,
   formatDate,
 } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -77,21 +78,30 @@ export default function SettingsPage() {
     }
   }
 
+  const initial = (user?.full_name || user?.email || "?").trim().charAt(0).toUpperCase();
+
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-slate-500">Manage your profile, appearance and account.</p>
-      </header>
+      <PageHeader
+        title="Settings"
+        description="Manage your profile, appearance and account."
+      />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader title="Profile" description="Your display name and password." />
           <form onSubmit={saveProfile} className="flex flex-col gap-4 p-5">
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <span className="font-medium text-slate-700 dark:text-slate-300">Email</span>
-              <span>{user?.email}</span>
-              <Badge tone="slate">{user?.role}</Badge>
+            <div className="flex items-center gap-3">
+              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-brand-600 text-base font-semibold text-white">
+                {initial}
+              </span>
+              <div className="flex flex-col">
+                <span className="text-sm font-medium">{user?.full_name || "Unnamed user"}</span>
+                <span className="flex items-center gap-2 text-sm text-slate-500">
+                  {user?.email}
+                  <Badge tone="brand">{user?.role}</Badge>
+                </span>
+              </div>
             </div>
             <Input
               label="Full name"
@@ -166,21 +176,21 @@ export default function SettingsPage() {
           title="About this deployment"
           description="Runs entirely on your infrastructure."
           action={
-            <span className="flex items-center gap-1 text-xs text-slate-400">
+            <Badge tone="green">
               <ShieldIcon className="h-3.5 w-3.5" /> Self-hosted
-            </span>
+            </Badge>
           }
         />
         <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
           {[
-            ["Frontend", "Next.js 16 + Tailwind v4"],
-            ["API", "FastAPI + SQLAlchemy 2"],
-            ["Workers", "Celery + Redis"],
-            ["Model", "Qwen2.5-0.5B (local)"],
+            ["Frontend", "Responsive web console"],
+            ["API", "Secure REST + streaming"],
+            ["Workers", "Background processing"],
+            ["Model", "Runs locally"],
           ].map(([label, value]) => (
             <div
               key={label}
-              className="rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-800"
+              className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/50"
             >
               <p className="text-xs font-medium tracking-wide text-slate-500 uppercase">
                 {label}

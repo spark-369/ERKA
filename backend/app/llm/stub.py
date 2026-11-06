@@ -2,7 +2,7 @@
 
 Used when ``LLM_PROVIDER=stub`` (tests, CI, laptops without model weights).
 It does not "think": it answers extractively from the numbered context blocks so
-the surrounding pipeline (retrieval -> prompt -> stream -> persistence) is fully
+the surrounding pipeline (retrieval -> prompt -> generate -> persistence) is fully
 exercised without a 1 GB download.
 """
 
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Iterator
 from typing import Any
 
 from app.core.config import Settings, get_settings
@@ -108,51 +107,6 @@ class StubLLMProvider(LLMProvider):
         )
 
     # ---------------------------------------------------------------- public
-    def supports_structured_output(self) -> bool:
-        """The stub can always honour a schema (deterministically)."""
-        return True
-
-    def generate_structured(
-        self,
-        messages: list[Message],
-        schema: type[Any],
-        *,
-        max_new_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        **kwargs: Any,
-    ) -> Any | None:
-        """Return ``schema`` populated from the retrieved context.
-
-        Mirrors the real provider's contract: a detailed prose ``answer`` (never
-        a dump of the raw context), ``key_points`` bullets expanding on it with
-        the concrete facts from each source, and ``citations`` listing the source
-        numbers used. This keeps the offline path shaped exactly like the
-        constrained Qwen output.
-        """
-        prompt = self._latest_user_message(messages)
-        sections = self._context_sections(prompt)
-        if not sections:
-            return schema(answer=NO_CONTEXT_ANSWER, key_points=[], citations=[])
-
-        citations = [index for index, _, _ in sections]
-        names = list(dict.fromkeys(name for _, name, _ in sections))
-        if len(names) == 1:
-            answer = (
-                f"The document {names[0]} addresses this question. It explains "
-                "the topic in the following terms, based on the retrieved "
-                "passages summarised below."
-            )
-        else:
-            answer = (
-                f"This is covered across several documents ({', '.join(names)}). "
-                "Taken together they describe the topic as follows, with the "
-                "relevant details listed below."
-            )
-
-        key_points = [f"{name}: {text}" for _, name, text in sections]
-        return schema(answer=answer, key_points=key_points, citations=citations)
-
     def generate(
         self,
         messages: list[Message],
@@ -174,26 +128,6 @@ class StubLLMProvider(LLMProvider):
             finish_reason="stop",
             metadata={"provider": "stub", "deterministic": True},
         )
-
-    def stream(
-        self,
-        messages: list[Message],
-        *,
-        max_new_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        **kwargs: Any,
-    ) -> Iterator[str]:
-        text = self.generate(
-            messages,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            **kwargs,
-        ).text
-        # Emit word-by-word so SSE framing is realistically exercised.
-        for index, word in enumerate(text.split(" ")):
-            yield word if index == 0 else f" {word}"
 
     def health(self) -> dict[str, Any]:
         return {"provider": "stub", "model": self.model_name, "status": "ok"}

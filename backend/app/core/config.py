@@ -37,15 +37,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 #   uses absolute position embeddings up to 32768, so
 #   ``prompt_tokens + generated_tokens`` may never exceed it. The 0.5B variant
 #   has no YaRN rope scaling (unlike the 7B+ siblings, which reach 131072).
-# * ``LLM_MAX_GENERATION_TOKENS`` (8192) - the longest answer Qwen2.5 was
-#   trained to produce. ``transformers`` would allow more, but generation past
-#   this point is outside the training distribution and degrades into
-#   repetition rather than a longer coherent answer.
+# * ``LLM_MAX_GENERATION_TOKENS`` (32768) - the highest number of tokens the
+#   model can emit for the answer. It is set equal to the context window so the
+#   completion is allowed the model's full capacity; the provider still trims it
+#   to ``context_window - prompt_tokens`` at request time so ``prompt`` and
+#   ``completion`` together never overflow the window.
 #
 # Revisit both if ``LLM_MODEL_ID`` is pointed at a different model.
 # --------------------------------------------------------------------------- #
 LLM_CONTEXT_WINDOW_TOKENS = 32_768
-LLM_MAX_GENERATION_TOKENS = 8_192
+LLM_MAX_GENERATION_TOKENS = 32_768
 
 
 class Settings(BaseSettings):
@@ -142,25 +143,54 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------- LLM layer
     llm_provider: Literal["transformers", "stub"] = "transformers"
     llm_model_id: str = "Qwen/Qwen2.5-0.5B-Instruct"
-    #: Longest answer the model may generate, in tokens. Defaults to the full
-    #: 8192-token generation length Qwen2.5 was trained for, so replies are as
-    #: detailed as the model is capable of. The structured schema emits prose +
-    #: bullet points + citations in one object, so a small budget truncates the
-    #: JSON mid-way and the answer loses its citations.
-    #:
-    #: Raising this is bounded by the context window: ``prompt_tokens`` (system
-    #: prompt + retrieved context + history) plus this value must stay within
-    #: ``LLM_CONTEXT_WINDOW_TOKENS`` (32768). See ``_check_generation_budget``.
+    #: Highest number of tokens the model may generate for the answer. This is a
+    #: hard latency ceiling: generation is CPU-bound, so the value also caps how
+    #: long a single synchronous reply can take. The provider trims it at request
+    #: time so ``prompt_tokens`` (system prompt + retrieved context + history)
+    #: plus the completion stay within ``LLM_CONTEXT_WINDOW_TOKENS``. The shipped
+    #: ``backend/.env`` sets a snappy 512; the ceiling here is the model's maximum
+    #: (``LLM_MAX_GENERATION_TOKENS``). See ``_check_generation_budget``.
     llm_max_new_tokens: int = LLM_MAX_GENERATION_TOKENS
     llm_temperature: float = 0.2
     llm_top_p: float = 0.9
+    #: Repetition penalty applied during generation. Values > 1.0 discourage the
+    #: model from repeating tokens it has already produced. Small models left at a
+    #: weak penalty (<=1.05) tend to loop and duplicate whole list items; 1.1 is a
+    #: safe default that removes the duplication without hurting fluency.
+    llm_repetition_penalty: float = 1.1
+    #: Hard block on repeating any n-gram of this many tokens (0 disables it).
+    #: The repetition penalty alone did not stop the 0.5B model looping the same
+    #: phrase, which burned the whole token budget before finishing; banning
+    #: repeated 4-grams forces it to move on so the answer completes.
+    llm_no_repeat_ngram_size: int = 4
     llm_device: str = "cpu"
-    llm_torch_dtype: str = "auto"
+    #: CPU inference threads for the CPU-only deployment. ``0`` (the default)
+    #: sizes the PyTorch thread pool to every logical core
+    #: (``torch.set_num_threads(os.cpu_count())``) - the single biggest
+    #: throughput lever for synchronous CPU generation. A positive value caps it
+    #: (leaving some cores for the web server under concurrency).
+    llm_num_threads: int = 0
+    #: Attention backend passed to ``from_pretrained``. "sdpa" (the default) uses
+    #: PyTorch's fused scaled-dot-product attention, which is the fastest backend
+    #: available on both CPU and GPU without extra dependencies. It is safe here
+    #: because the loader clears the model's ``sliding_window`` before
+    #: construction (so sdpa never sees a window it cannot implement and emits no
+    #: warning). "eager" is the slow reference implementation; "flash_attention_2"
+    #: needs a compatible GPU.
+    llm_attn_implementation: str = "sdpa"
+    #: Weight precision for the model. The default loads plain **float32**
+    #: (full-precision, no quantization): the highest-fidelity option, and the
+    #: dtype with the most complete set of CPU kernels, so it is also the most
+    #: robust choice on a CPU-only host. It uses ~2x the memory of a 16-bit load;
+    #: set ``float16``/``bfloat16`` to halve memory at a small quality cost, or
+    #: ``auto`` to pick float16 on CUDA and bfloat16 elsewhere.
+    #: Allowed: "float32" | "float16" | "bfloat16" | "auto".
+    llm_torch_dtype: str = "float32"
     llm_trust_remote_code: bool = False
-    #: Constrain decoding to a JSON schema (outlines + transformers) so answers
-    #: arrive as a validated object with explicit citations. Falls back to plain
-    #: text automatically when ``outlines`` is not installed.
-    llm_structured_output: bool = True
+    #: Load the weights with ``low_cpu_mem_usage=True`` (streams the checkpoint
+    #: instead of building a full fp32 copy first). Cuts peak RAM and cold-load
+    #: time; requires ``accelerate`` (already a dependency).
+    llm_low_cpu_mem_usage: bool = True
     chat_use_celery: bool = False
     hf_home: str | None = None
 
@@ -223,18 +253,18 @@ class Settings(BaseSettings):
     def _check_generation_budget(cls, value: int) -> int:
         """Keep the generation budget inside what the model can actually do.
 
-        Exceeding the trained 8192-token generation length produces degenerate,
-        repetitive output rather than a longer answer, and exceeding the 32768
-        context window makes the position embeddings run out entirely - so both
-        are rejected at configuration time rather than silently misbehaving at
-        request time.
+        The upper bound is the model's maximum generation length, which equals
+        its context window: ``prompt_tokens + max_new_tokens`` must stay within
+        the window or the position embeddings run out, so a value above either
+        ceiling is rejected at configuration time rather than silently
+        misbehaving at request time.
         """
         if value < 1:
             raise ValueError("llm_max_new_tokens must be at least 1")
         if value > LLM_MAX_GENERATION_TOKENS:
             raise ValueError(
                 f"llm_max_new_tokens must not exceed {LLM_MAX_GENERATION_TOKENS} "
-                "(the longest generation length Qwen2.5 was trained for)"
+                "(the model's maximum generation length)"
             )
         if value > LLM_CONTEXT_WINDOW_TOKENS:
             raise ValueError(

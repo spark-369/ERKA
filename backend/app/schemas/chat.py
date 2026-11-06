@@ -96,7 +96,7 @@ class ChatCompletionRequest(BaseModel):
     )
     top_k: int | None = Field(default=None, ge=1, le=20)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    #: Upper bound mirrors the model's trained generation length (see
+    #: Upper bound mirrors the model's maximum generation length (see
     #: ``app.core.config.LLM_MAX_GENERATION_TOKENS``). Asking for more than this
     #: is rejected here rather than silently producing degenerate output.
     max_new_tokens: int | None = Field(
@@ -117,13 +117,9 @@ class ChatCompletionResponse(BaseModel):
     conversation_id: str
     message_id: str
     answer: str
-    #: Supporting bullet points from the structured output (may be empty).
-    key_points: list[str] = Field(default_factory=list)
     sources: list[SourceReference] = Field(default_factory=list)
     #: 0-based indices into ``sources`` that the answer cited.
     citations: list[int] = Field(default_factory=list)
-    #: True when the answer came from schema-constrained (structured) generation.
-    structured: bool = False
     model_name: str
     latency_ms: int
     token_count: int = 0
@@ -164,8 +160,6 @@ class ChatStreamEvent(BaseModel):
         latency_ms: int,
         token_count: int = 0,
         citations: list[int] | None = None,
-        key_points: list[str] | None = None,
-        structured: bool = False,
     ) -> "ChatStreamEvent":
         return cls(
             type="done",
@@ -176,8 +170,6 @@ class ChatStreamEvent(BaseModel):
                 "latency_ms": latency_ms,
                 "token_count": token_count,
                 "citations": citations or [],
-                "key_points": key_points or [],
-                "structured": structured,
             },
         )
 

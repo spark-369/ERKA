@@ -1,18 +1,19 @@
 "use client";
 
 /**
- * Chat console: SSE-streamed RAG answers with structured citations.
+ * Chat console: SSE-streamed RAG answers with grounded, cited sources.
  *
  * Layout: a conversation rail on the left, the transcript in the centre. Answers
- * stream token-by-token; the backend also returns a structured payload
- * (`answer` prose + `key_points` bullets + `citations`) which is rendered as
- * first-class UI rather than parsed out of prose.
+ * arrive as progressive `token` events, followed by a `done` event carrying the
+ * retrieved sources (rendered as citation chips) and answer metadata.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChatIcon,
   CopyIcon,
+  DocumentsIcon,
+  EditIcon,
   PlusIcon,
   SendIcon,
   SparkIcon,
@@ -39,12 +40,11 @@ const SUGGESTIONS = [
 ];
 
 /**
- * Normalise a stored assistant message. History persists citations, key points
- * and the structured flag as one JSON envelope; live messages already carry
- * those as plain fields.
+ * Normalise a stored assistant message. History persists citations and sources
+ * as one JSON envelope; live messages already carry those as plain fields.
  */
 function parseStored(raw) {
-  const empty = { sources: [], key_points: [], structured: false, citations: [] };
+  const empty = { sources: [], citations: [] };
   if (!raw) return empty;
   let parsed = raw;
   if (typeof raw === "string") {
@@ -56,31 +56,16 @@ function parseStored(raw) {
   }
   // Backwards compatible: older rows stored a bare array of sources.
   const sources = Array.isArray(parsed) ? parsed : parsed?.sources || [];
-  const key_points = Array.isArray(parsed) ? [] : parsed?.key_points || [];
-  const structured = Array.isArray(parsed) ? false : Boolean(parsed?.structured);
   const citations = sources.reduce((acc, source, index) => {
     if (source?.cited) acc.push(index);
     return acc;
   }, []);
-  return { sources, key_points, structured, citations };
+  return { sources, citations };
 }
 
 // --------------------------------------------------------------------------- //
 // Answer pieces
 // --------------------------------------------------------------------------- //
-function KeyPoints({ points }) {
-  if (!points?.length) return null;
-  return (
-    <ul className="mt-3 flex list-disc flex-col gap-1.5 pl-5">
-      {points.map((point, index) => (
-        <li key={index} className="leading-6">
-          {point}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function SourceList({ sources, citations, activeSource, onFocusSource }) {
   if (!sources?.length) return null;
   const cited = new Set(citations || []);
@@ -156,7 +141,7 @@ function MessageBubble({ message, onFocusSource, activeSource }) {
   if (isUser) {
     return (
       <div className="animate-fade-in flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-slate-900 px-4 py-3 text-sm leading-6 whitespace-pre-wrap text-white dark:bg-white dark:text-slate-900">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-brand-600 px-4 py-3 text-sm leading-6 whitespace-pre-wrap text-white">
           {message.content}
         </div>
       </div>
@@ -165,7 +150,7 @@ function MessageBubble({ message, onFocusSource, activeSource }) {
 
   return (
     <div className="animate-fade-in flex gap-3">
-      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white dark:bg-white dark:text-slate-900">
+      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-600 text-white">
         <SparkIcon className="h-4 w-4" />
       </span>
       <div className="min-w-0 flex-1 rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm dark:border-slate-800 dark:bg-slate-900">
@@ -180,7 +165,6 @@ function MessageBubble({ message, onFocusSource, activeSource }) {
           </p>
         )}
 
-        <KeyPoints points={message.key_points} />
         <SourceList
           sources={sources}
           citations={message.citations}
@@ -192,10 +176,8 @@ function MessageBubble({ message, onFocusSource, activeSource }) {
           <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-2 dark:border-slate-800">
             <span className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
               {ungrounded ? <Badge tone="amber">no sources</Badge> : null}
-              {message.structured ? <Badge tone="green">structured</Badge> : null}
-              {message.model_name ? <span>{message.model_name}</span> : null}
-              {message.latency_ms ? <span>· {message.latency_ms} ms</span> : null}
-              {message.token_count ? <span>· {message.token_count} tok</span> : null}
+              {message.latency_ms ? <span>{message.latency_ms} ms</span> : null}
+              {message.token_count ? <span>{message.token_count} tokens</span> : null}
             </span>
             <button
               type="button"
@@ -218,6 +200,7 @@ function ConversationRail({
   activeId,
   onOpen,
   onDelete,
+  onRename,
   onNew,
   documents,
   selectedDocumentIds,
@@ -226,11 +209,26 @@ function ConversationRail({
   disabled,
 }) {
   const [query, setQuery] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [draftTitle, setDraftTitle] = useState("");
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return conversations;
     return conversations.filter((item) => item.title.toLowerCase().includes(needle));
   }, [conversations, query]);
+
+  function beginRename(conversation) {
+    setEditingId(conversation.id);
+    setDraftTitle(conversation.title);
+  }
+
+  function submitRename(id) {
+    const next = draftTitle.trim();
+    setEditingId(null);
+    const current = conversations.find((item) => item.id === id);
+    if (!next || next === current?.title) return;
+    onRename?.(id, next);
+  }
 
   return (
     <aside className="flex h-full flex-col gap-3">
@@ -246,7 +244,7 @@ function ConversationRail({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Filter conversations…"
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-slate-400 dark:border-slate-800 dark:bg-slate-950"
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-brand-500 dark:border-slate-800 dark:bg-slate-950"
           />
         ) : null}
         <div className="flex max-h-[40vh] flex-col gap-1 overflow-y-auto">
@@ -262,27 +260,59 @@ function ConversationRail({
                   key={conversation.id}
                   className={`group flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm ${
                     active
-                      ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                      ? "bg-brand-600 text-white"
                       : "hover:bg-slate-100 dark:hover:bg-slate-800"
                   }`}
                 >
-                  <button
-                    type="button"
-                    onClick={() => onOpen(conversation.id)}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                    title={conversation.title}
-                  >
-                    <ChatIcon className="h-3.5 w-3.5 shrink-0 opacity-60" />
-                    <span className="truncate">{conversation.title}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDelete(conversation.id)}
-                    className="shrink-0 opacity-0 transition-opacity group-hover:opacity-70"
-                    aria-label="Delete conversation"
-                  >
-                    <TrashIcon className="h-3.5 w-3.5" />
-                  </button>
+                  {editingId === conversation.id ? (
+                    <form
+                      className="flex min-w-0 flex-1 items-center gap-1"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        submitRename(conversation.id);
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        value={draftTitle}
+                        onChange={(event) => setDraftTitle(event.target.value)}
+                        onBlur={() => submitRename(conversation.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") setEditingId(null);
+                        }}
+                        maxLength={255}
+                        className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs text-slate-900 outline-none focus:border-brand-500 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100"
+                      />
+                    </form>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onOpen(conversation.id)}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        title={conversation.title}
+                      >
+                        <ChatIcon className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                        <span className="truncate">{conversation.title}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => beginRename(conversation)}
+                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-70"
+                        aria-label="Rename conversation"
+                      >
+                        <EditIcon className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDelete(conversation.id)}
+                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-70"
+                        aria-label="Delete conversation"
+                      >
+                        <TrashIcon className="h-3.5 w-3.5" />
+                      </button>
+                    </>
+                  )}
                 </div>
               );
             })
@@ -322,7 +352,7 @@ function ConversationRail({
                   checked={selectedDocumentIds.includes(doc.id)}
                   onChange={() => onToggleDocument(doc.id)}
                   disabled={disabled}
-                  className="h-3.5 w-3.5 rounded border-slate-300 dark:border-slate-600 dark:bg-slate-800"
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800"
                 />
                 <span className="truncate" title={doc.original_filename}>
                   {doc.original_filename}
@@ -379,6 +409,16 @@ export default function ChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
+
+  // Auto-grow the composer: reset to the natural height, then expand up to the
+  // CSS cap (max-h-48). Keeps a one-line box that grows with the message and
+  // never scrolls internally, which is the expected production chat behaviour.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [question]);
 
   // Drop selected documents that no longer exist. The rail is loaded once per
   // mount, so a document deleted (then re-uploaded under a new id) could linger
@@ -438,6 +478,16 @@ export default function ChatPage() {
     }
   }
 
+  async function renameConversation(id, title) {
+    try {
+      await api.renameConversation(id, { title });
+      await loadConversations();
+      toast.success("Conversation renamed.");
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
   async function handleAsk(event) {
     event?.preventDefault();
     const text = question.trim();
@@ -489,8 +539,6 @@ export default function ChatPage() {
               latency_ms: data.latency_ms,
               token_count: data.token_count,
               citations: data.citations || [],
-              key_points: data.key_points || [],
-              structured: Boolean(data.structured),
             }));
           },
           onError: (payload) => {
@@ -516,12 +564,13 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="grid flex-1 gap-6 lg:grid-cols-[260px_1fr]">
+    <div className="flex min-h-0 flex-col gap-4 lg:grid lg:h-[calc(100dvh-6.5rem)] lg:grid-cols-[260px_1fr] lg:gap-6">
       <ConversationRail
         conversations={conversations}
         activeId={conversationId}
         onOpen={openConversation}
         onDelete={removeConversation}
+        onRename={renameConversation}
         onNew={startNewConversation}
         documents={documents}
         selectedDocumentIds={selectedDocumentIds}
@@ -530,8 +579,8 @@ export default function ChatPage() {
         disabled={streaming}
       />
 
-      <Card className="flex min-h-[70vh] flex-col p-0">
-        <div className="flex-1 space-y-5 overflow-y-auto p-5">
+      <Card className="flex min-h-[70vh] flex-1 flex-col overflow-hidden p-0 lg:min-h-0">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
           {loadingHistory ? (
             <div className="flex h-full items-center justify-center gap-2 text-sm text-slate-500">
               <Spinner /> Loading conversation…
@@ -574,12 +623,20 @@ export default function ChatPage() {
 
         <form
           onSubmit={handleAsk}
-          className="flex flex-col gap-3 border-t border-slate-200 p-4 dark:border-slate-800"
+          className="shrink-0 border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900"
         >
           <Alert tone="error" onDismiss={() => setError("")}>
             {error}
           </Alert>
-          <div className="flex items-end gap-2">
+
+          {/* Composer shell: textarea and the Send/Stop button share one row,
+              vertically centred (items-center) so the button sits in the middle
+              of the input as it grows. */}
+          <div
+            className={`flex items-center gap-2 rounded-2xl border bg-white p-2 pl-3 shadow-sm transition-colors focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100 dark:bg-slate-950 dark:focus-within:ring-brand-950 ${
+              streaming ? "border-slate-200 dark:border-slate-800" : "border-slate-300 dark:border-slate-700"
+            }`}
+          >
             <textarea
               ref={inputRef}
               rows={1}
@@ -594,30 +651,54 @@ export default function ChatPage() {
                 }
               }}
               disabled={streaming}
-              className="max-h-40 min-h-[42px] flex-1 resize-none rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none transition-colors placeholder:text-slate-400 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-950 dark:disabled:bg-slate-900 dark:focus:ring-slate-800"
+              className="block max-h-48 flex-1 resize-none bg-transparent py-1.5 text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-400 disabled:text-slate-500 dark:text-slate-100"
             />
+
             {streaming ? (
-              <Button variant="secondary" onClick={stopStreaming} className="h-[42px]">
+              <Button
+                variant="secondary"
+                onClick={stopStreaming}
+                size="sm"
+                className="h-9 shrink-0 self-center rounded-xl px-3"
+                aria-label="Stop generating"
+              >
                 <StopIcon className="h-4 w-4" />
                 Stop
               </Button>
             ) : (
-              <Button type="submit" disabled={!question.trim()} className="h-[42px]">
+              <Button
+                type="submit"
+                size="sm"
+                disabled={!question.trim()}
+                className="h-9 shrink-0 self-center rounded-xl px-3"
+                aria-label="Send question"
+              >
                 <SendIcon className="h-4 w-4" />
                 Send
               </Button>
             )}
           </div>
-          <div className="flex items-center justify-between">
+
+          <div className="mt-2 flex items-center justify-between gap-2 px-1">
             <Checkbox
               label="Include conversation history"
               checked={useHistory}
               onChange={(event) => setUseHistory(event.target.checked)}
               disabled={streaming}
             />
-            <span className="hidden text-[11px] text-slate-400 sm:inline">
-              Enter to send · Shift+Enter for newline
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex min-w-0 items-center gap-1 rounded-full border border-slate-200 px-2 py-0.5 text-[11px] text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                <DocumentsIcon className="h-3 w-3 shrink-0" />
+                <span className="truncate">
+                  {selectedDocumentIds.length
+                    ? `${selectedDocumentIds.length} doc${selectedDocumentIds.length > 1 ? "s" : ""} in scope`
+                    : "All documents"}
+                </span>
+              </span>
+              <span className="hidden text-[11px] text-slate-400 sm:inline">
+                Enter to send · Shift+Enter for newline
+              </span>
+            </div>
           </div>
         </form>
       </Card>

@@ -25,6 +25,61 @@ export function Card({ children, className = "", as: Tag = "div", ...props }) {
   );
 }
 
+/** Brand lockup reused in the sidebar, auth panel and landing header. */
+export function BrandMark({ label = "RAG Assistant", size = "md", className = "" }) {
+  const box = size === "lg" ? "h-8 w-8 text-base" : "h-7 w-7 text-xs";
+  return (
+    <span className={`flex items-center gap-2 ${className}`}>
+      <span
+        className={`flex ${box} items-center justify-center rounded-lg bg-brand-600 font-bold text-white shadow-sm`}
+      >
+        R
+      </span>
+      <span className="text-sm font-semibold tracking-tight">{label}</span>
+    </span>
+  );
+}
+
+/** Consistent page title row for the console routes. */
+export function PageHeader({ title, description, actions }) {
+  return (
+    <header className="flex flex-wrap items-end justify-between gap-4">
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        {description ? (
+          <p className="text-sm text-slate-500 dark:text-slate-400">{description}</p>
+        ) : null}
+      </div>
+      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+    </header>
+  );
+}
+
+const STAT_TONES = {
+  slate: "text-slate-900 dark:text-slate-100",
+  green: "text-emerald-600 dark:text-emerald-400",
+  amber: "text-amber-600 dark:text-amber-400",
+  blue: "text-blue-600 dark:text-blue-400",
+  red: "text-red-600 dark:text-red-400",
+  brand: "text-brand-600 dark:text-brand-400",
+};
+
+/** Numeric tile used across the dashboard and documents consoles. */
+export function StatCard({ label, value, tone = "slate", hint, icon: Icon }) {
+  return (
+    <Card className="px-4 py-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium tracking-wide text-slate-500 uppercase">{label}</p>
+        {Icon ? <Icon className="h-4 w-4 text-slate-400" /> : null}
+      </div>
+      <p className={`mt-1 text-2xl font-semibold tabular-nums ${STAT_TONES[tone] || STAT_TONES.slate}`}>
+        {formatNumber(value ?? 0)}
+      </p>
+      {hint ? <p className="mt-0.5 text-xs text-slate-400">{hint}</p> : null}
+    </Card>
+  );
+}
+
 export function CardHeader({ title, description, action }) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4 dark:border-slate-800">
@@ -75,7 +130,7 @@ export function Button({
 }) {
   const variants = {
     primary:
-      "bg-slate-900 text-white hover:bg-slate-700 disabled:bg-slate-400 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200 dark:disabled:bg-slate-700",
+      "bg-brand-600 text-white shadow-sm hover:bg-brand-700 disabled:bg-brand-300 dark:bg-brand-500 dark:hover:bg-brand-400 dark:disabled:bg-brand-900",
     secondary:
       "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800",
     ghost:
@@ -92,7 +147,7 @@ export function Button({
     <button
       type={type}
       disabled={disabled || loading}
-      className={`inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-1 focus-visible:outline-none disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 focus-visible:ring-offset-background focus-visible:outline-none disabled:cursor-not-allowed ${variants[variant]} ${sizes[size]} ${className}`}
       {...props}
     >
       {loading ? <Spinner className="h-3.5 w-3.5" /> : null}
@@ -115,7 +170,7 @@ export function Input({ label, hint, error, className = "", id, ...props }) {
         className={`rounded-lg border bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:ring-2 disabled:bg-slate-100 disabled:text-slate-500 dark:bg-slate-950 dark:text-slate-100 dark:disabled:bg-slate-900 ${
           error
             ? "border-red-300 focus:border-red-500 focus:ring-red-100 dark:border-red-900 dark:focus:ring-red-950"
-            : "border-slate-300 focus:border-slate-500 focus:ring-slate-200 dark:border-slate-700 dark:focus:ring-slate-800"
+            : "border-slate-300 focus:border-brand-500 focus:ring-brand-100 dark:border-slate-700 dark:focus:ring-brand-950"
         } ${className}`}
         {...props}
       />
@@ -137,7 +192,7 @@ export function SearchInput({ value, onChange, placeholder = "Search…", classN
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        className="w-full rounded-lg border border-slate-300 bg-white py-2 pr-3 pl-9 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:ring-slate-800"
+        className="w-full rounded-lg border border-slate-300 bg-white py-2 pr-3 pl-9 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:ring-brand-950"
       />
     </div>
   );
@@ -152,7 +207,7 @@ export function Select({ label, className = "", id, children, ...props }) {
       ) : null}
       <select
         id={inputId}
-        className={`rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors focus:border-slate-500 focus:ring-2 focus:ring-slate-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:ring-slate-800 ${className}`}
+        className={`rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:ring-brand-950 ${className}`}
         {...props}
       >
         {children}
@@ -171,7 +226,7 @@ export function Checkbox({ label, className = "", id, ...props }) {
       <input
         id={inputId}
         type="checkbox"
-        className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400 dark:border-slate-600 dark:bg-slate-800"
+        className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800"
         {...props}
       />
       {label}
@@ -190,6 +245,7 @@ export function Badge({ children, tone = "slate", className = "" }) {
     amber: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
     red: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300",
     blue: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300",
+    brand: "bg-brand-100 text-brand-700 dark:bg-brand-950 dark:text-brand-300",
   };
   return (
     <span
@@ -279,7 +335,7 @@ export function ProgressBar({ value = 0, className = "" }) {
         aria-valuemax={100}
       >
         <div
-          className="h-full rounded-full bg-slate-900 transition-all duration-300 dark:bg-white"
+          className="h-full rounded-full bg-brand-600 transition-all duration-300 dark:bg-brand-500"
           style={{ width: `${percent}%` }}
         />
       </div>

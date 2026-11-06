@@ -60,6 +60,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except OSError as exc:  # pragma: no cover
             logger.warning("Could not create directory %s: %s", path, exc)
 
+    # Warm the LLM so the first user request does not pay the cold-start cost of
+    # loading tokenizer + weights (a multi-second stall otherwise). Skipped for
+    # the deterministic stub and the test environment, and never fatal: a failed
+    # warmup just leaves lazy loading to the first real call.
+    if settings.llm_provider == "transformers" and not settings.is_testing:
+        try:
+            from app.llm.factory import get_llm_provider
+
+            get_llm_provider().warmup()
+        except Exception as exc:  # noqa: BLE001 - boot must not depend on weights
+            logger.warning("LLM warmup skipped: %s", exc)
+
     yield
 
     logger.info("Shutting down %s", settings.app_name)

@@ -49,10 +49,14 @@ export default function AppLayout({ children }) {
   const [navOpen, setNavOpen] = useState(false);
 
   return (
-    <div className="flex min-h-screen">
+    <div className="min-h-screen">
       {isAuthenticated ? <Sidebar open={navOpen} onClose={() => setNavOpen(false)} /> : null}
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div
+        className={`flex min-h-screen flex-col ${
+          isAuthenticated ? "lg:pl-64" : ""
+        }`}
+      >
         {isAuthenticated ? <TopBar onMenu={() => setNavOpen(true)} /> : null}
         <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col px-4 py-6 sm:px-6">
           <AuthGate>{children}</AuthGate>

@@ -1,13 +1,9 @@
 """Local inference with Hugging Face ``transformers`` + Qwen2.5-0.5B.
 
-The model is loaded lazily on first use and cached for the lifetime of the
-process (a Celery worker, a Gunicorn worker or the dev server). Generation uses
-``TextIteratorStreamer`` so the API can push tokens over SSE as they are
-produced instead of waiting for the full completion.
-
-When ``outlines`` is installed, :meth:`TransformersLLMProvider.generate_structured`
-constrains decoding to a Pydantic schema (masked logits), which turns the same
-Qwen2.5-0.5B weights into a reliable structured-output model for RAG answers.
+Everything here is synchronous: the model is loaded lazily on first use and
+cached for the lifetime of the process (a Celery worker, a Gunicorn worker or
+the dev server), and ``generate`` runs a single blocking ``model.generate`` call
+that returns the whole completion.
 """
 
 from __future__ import annotations
@@ -24,7 +20,8 @@ from app.llm.base import GenerationResult, LLMProvider, Message
 logger = get_logger(__name__)
 
 # Module-level cache so multiple provider instances share one loaded model.
-_model_cache: dict[str, tuple[Any, Any, str]] = {}
+# Each entry is ``(tokenizer, model, device, quantized)``.
+_model_cache: dict[str, tuple[Any, Any, str, bool]] = {}
 _cache_lock = threading.Lock()
 
 
@@ -43,9 +40,7 @@ class TransformersLLMProvider(LLMProvider):
         self._tokenizer: Any | None = None
         self._model: Any | None = None
         self._device: str = "cpu"
-        # Cached outlines model wrapper + one compiled Generator per schema.
-        self._outlines_model: Any | None = None
-        self._outlines_generators: dict[Any, Any] = {}
+        self._quantized: bool = False
 
     # ------------------------------------------------------------ model load
     def _resolve_device(self) -> str:
@@ -64,17 +59,99 @@ class TransformersLLMProvider(LLMProvider):
             pass
         return "cpu"
 
+    def _configure_torch_threads(self, device: str) -> None:
+        """Size the CPU thread pool for fast, synchronous generation.
+
+        PyTorch's intra-op parallelism is the primary throughput lever for a
+        CPU-only deployment: each generated token is a sequence of matmuls, and
+        the default pool can under-use a multi-core box. ``LLM_NUM_THREADS=0``
+        (the default) uses every logical core; a positive value caps it. This is
+        a no-op for GPU devices, which parallelise on the accelerator instead.
+        """
+        if device.startswith("cuda") or device == "mps":
+            return
+        try:
+            import os
+
+            import torch
+
+            configured = self._config.llm_num_threads
+            threads = configured if configured and configured > 0 else (os.cpu_count() or 1)
+            torch.set_num_threads(threads)
+            logger.info("PyTorch CPU threads set to %d for inference.", threads)
+        except Exception as exc:  # noqa: BLE001 - tuning must never block load
+            logger.debug("Could not set PyTorch thread count (%s).", exc)
+
+    def _resolve_attn_implementation(self) -> str:
+        """Attention backend for ``from_pretrained``.
+
+        Defaults to ``eager``, whose reference implementation applies the
+        model's sliding window and emits no warnings. ``sdpa`` is faster where
+        supported but ignores sliding window, so transformers warns that
+        "unexpected results may be encountered" for models that declare one
+        (Qwen2.5 sets ``sliding_window`` in its config).
+        """
+        return (self._config.llm_attn_implementation or "eager").lower()
+
     def _resolve_dtype(self, device: str) -> Any:  # noqa: ANN401 - torch dtype
+        """Resolve the weight dtype, defaulting to float32.
+
+        ``float32`` (the default request) is full precision and has the most
+        complete CPU kernel coverage, so it is the most robust choice on a
+        CPU-only host; it costs ~2x the memory of a 16-bit load. ``float16`` is
+        16-bit and fastest where the kernels implement it, but on CPU/MPS it is
+        coerced to ``bfloat16`` because half-precision CPU ops are largely
+        unimplemented, so the load stays 16-bit without failing. ``auto`` picks
+        float16 on CUDA and bfloat16 elsewhere.
+        """
         import torch
 
-        requested = (self._config.llm_torch_dtype or "auto").lower()
+        requested = (self._config.llm_torch_dtype or "float32").lower()
         if requested == "auto":
-            return torch.float16 if device.startswith("cuda") else torch.float32
-        return {
+            return torch.float16 if device.startswith("cuda") else torch.bfloat16
+
+        resolved = {
             "float32": torch.float32,
             "float16": torch.float16,
             "bfloat16": torch.bfloat16,
         }.get(requested, torch.float32)
+
+        if resolved is torch.float16 and not device.startswith("cuda"):
+            logger.info(
+                "float16 requested on %s; using bfloat16 (16-bit) instead "
+                "(half-precision CPU kernels are unimplemented).",
+                device,
+            )
+            return torch.bfloat16
+        return resolved
+
+    @staticmethod
+    def _sanitise_model_config(model: Any) -> None:  # noqa: ANN401 - HF model
+        """Quiet two harmless-but-noisy defaults on the loaded model.
+
+        * ``sliding_window`` - Qwen2.5 declares a sliding window, which
+          transformers flags ("not implemented for 'eager'") on every load for
+          every backend short of flash-attention. Setting it to ``None`` stops
+          the warning; for this model the window equals the full context length,
+          so attention is effectively global anyway and behaviour is unchanged.
+        * the checkpoint's ``generation_config`` sampling defaults
+          (``temperature``/``top_p``/``top_k``) - these are only used when
+          ``do_sample=True``; leaving them on the config makes transformers warn
+          on every greedy call. Clearing them lets our explicit per-call kwargs
+          (or greedy decoding) stand alone.
+        """
+        config = getattr(model, "config", None)
+        if config is not None:
+            if getattr(config, "sliding_window", None) is not None:
+                config.sliding_window = None
+            if getattr(config, "use_sliding_window", None):
+                config.use_sliding_window = False
+
+        generation_config = getattr(model, "generation_config", None)
+        if generation_config is not None:
+            for attribute in ("temperature", "top_p", "top_k"):
+                if getattr(generation_config, attribute, None) is not None:
+                    setattr(generation_config, attribute, None)
 
     def _ensure_loaded(self) -> tuple[Any, Any]:
         """Load tokenizer + model once per process (thread-safe)."""
@@ -84,11 +161,11 @@ class TransformersLLMProvider(LLMProvider):
         with _cache_lock:
             cached = _model_cache.get(self.model_name)
             if cached is not None:
-                self._tokenizer, self._model, self._device = cached
+                self._tokenizer, self._model, self._device, self._quantized = cached
                 return self._tokenizer, self._model
 
             try:
-                from transformers import AutoModelForCausalLM, AutoTokenizer
+                from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
             except ImportError as exc:  # pragma: no cover - dependency missing
                 raise LLMError(
                     "transformers is not installed. Set LLM_PROVIDER=stub or install it.",
@@ -96,31 +173,71 @@ class TransformersLLMProvider(LLMProvider):
                 ) from exc
 
             device = self._resolve_device()
+            self._configure_torch_threads(device)
             dtype = self._resolve_dtype(device)
-            logger.info("Loading LLM '%s' on %s (dtype=%s)", self.model_name, device, dtype)
+            logger.info(
+                "Loading LLM '%s' on %s (dtype=%s, attn=%s).",
+                self.model_name,
+                device,
+                dtype,
+                self._resolve_attn_implementation(),
+            )
             try:
                 tokenizer = AutoTokenizer.from_pretrained(
                     self.model_name,
                     trust_remote_code=self._config.llm_trust_remote_code,
                     cache_dir=self._config.hf_home or None,
                 )
+                load_kwargs: dict[str, Any] = {
+                    "attn_implementation": self._resolve_attn_implementation(),
+                    "trust_remote_code": self._config.llm_trust_remote_code,
+                    "cache_dir": self._config.hf_home or None,
+                    "torch_dtype": dtype,
+                    # Streams the checkpoint into the target dtype instead of
+                    # building a full-precision copy first: lower peak RAM and a
+                    # faster cold load. Needs ``accelerate`` (a dependency).
+                    "low_cpu_mem_usage": self._config.llm_low_cpu_mem_usage,
+                }
+                # Load the config first and clear its sliding window so the
+                # "Sliding Window Attention is enabled but not implemented for
+                # 'sdpa'/'eager'" warning is never emitted (it fires during model
+                # construction, so patching the model afterwards is too late).
+                # The window equals the full context length here, so attention is
+                # effectively global and behaviour is unchanged.
+                try:
+                    model_config = AutoConfig.from_pretrained(
+                        self.model_name,
+                        trust_remote_code=self._config.llm_trust_remote_code,
+                        cache_dir=self._config.hf_home or None,
+                    )
+                    if getattr(model_config, "sliding_window", None) is not None:
+                        model_config.sliding_window = None
+                    if getattr(model_config, "use_sliding_window", None):
+                        model_config.use_sliding_window = False
+                    load_kwargs["config"] = model_config
+                except Exception as exc:  # noqa: BLE001 - config is an optimisation
+                    logger.debug("Could not pre-load model config (%s); using default.", exc)
+
                 model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name,
-                    torch_dtype=dtype,
-                    trust_remote_code=self._config.llm_trust_remote_code,
-                    cache_dir=self._config.hf_home or None,
+                    self.model_name, **load_kwargs
                 )
+                # Unquantized model: place it explicitly on the resolved device
+                # before inference.
                 model.to(device)
                 model.eval()
+                self._sanitise_model_config(model)
+            except LLMError:
+                raise
             except Exception as exc:
                 raise LLMError(
                     f"Failed to load model '{self.model_name}': {exc}",
                     code="model_load_failed",
                 ) from exc
 
-            _model_cache[self.model_name] = (tokenizer, model, device)
+            _model_cache[self.model_name] = (tokenizer, model, device, False)
             self._tokenizer, self._model, self._device = tokenizer, model, device
-            logger.info("LLM '%s' ready.", self.model_name)
+            self._quantized = False
+            logger.info("LLM '%s' ready (%s).", self.model_name, dtype)
             return tokenizer, model
 
     # ------------------------------------------------------------- prompting
@@ -155,14 +272,21 @@ class TransformersLLMProvider(LLMProvider):
         therefore legitimately reduce the room left for the answer, so the
         budget is trimmed here rather than letting generation fail or silently
         truncate the prompt.
+
+        The default budget is the model's full output capacity (the context
+        window itself), so this clamp is a normal, expected event and is logged
+        at INFO. When a caller *explicitly* asked for a budget that had to be
+        cut, that is a genuine limitation and is logged at WARNING.
         """
+        explicit = max_new_tokens is not None
         budget = max_new_tokens or self._config.llm_max_new_tokens
         if not prompt_tokens:
             return budget
 
         room = self._config.llm_context_window_tokens - prompt_tokens
         if room < budget:
-            logger.warning(
+            log = logger.warning if explicit else logger.info
+            log(
                 "Trimming max_new_tokens from %s to %s: the %s-token prompt "
                 "leaves only %s of the %s-token context window.",
                 budget,
@@ -196,16 +320,29 @@ class TransformersLLMProvider(LLMProvider):
         )
         tokenizer, _ = self._ensure_loaded()
         budget = self._resolve_generation_budget(max_new_tokens, prompt_tokens)
+        do_sample = resolved_temperature > 0
 
         kwargs: dict[str, Any] = {
             "max_new_tokens": budget,
-            "top_p": top_p if top_p is not None else self._config.llm_top_p,
-            "do_sample": resolved_temperature > 0,
-            "repetition_penalty": 1.05,
+            "do_sample": do_sample,
+            "repetition_penalty": self._config.llm_repetition_penalty,
             "pad_token_id": tokenizer.eos_token_id,
+            # Greedy decoding (a single beam) and the KV cache are the fastest
+            # settings for synchronous generation: no beam search, and previously
+            # computed keys/values are reused for every new token.
+            "num_beams": 1,
+            "use_cache": True,
         }
-        if resolved_temperature > 0:
+        # Banning repeated n-grams is what actually stops the small model from
+        # looping the same phrase until it runs out of tokens.
+        if self._config.llm_no_repeat_ngram_size > 0:
+            kwargs["no_repeat_ngram_size"] = self._config.llm_no_repeat_ngram_size
+        # temperature/top_p/top_k only participate in sample-based generation;
+        # passing them with do_sample=False makes transformers warn on every
+        # call, so they are attached only when we actually sample.
+        if do_sample:
             kwargs["temperature"] = max(resolved_temperature, 1e-2)
+            kwargs["top_p"] = top_p if top_p is not None else self._config.llm_top_p
         return kwargs
 
     def _move_to_device(self, inputs: dict[str, Any]) -> dict[str, Any]:
@@ -259,7 +396,7 @@ class TransformersLLMProvider(LLMProvider):
             metadata={"provider": "transformers", "device": self._device},
         )
 
-    def stream(
+    def generate_stream(
         self,
         messages: list[Message],
         *,
@@ -268,161 +405,59 @@ class TransformersLLMProvider(LLMProvider):
         top_p: float | None = None,
         **kwargs: Any,
     ) -> Iterator[str]:
+        """Yield decoded text as the model produces it (real token streaming).
+
+        ``model.generate`` is blocking, so it runs on a worker thread while a
+        Hugging Face :class:`TextIteratorStreamer` hands each newly decoded piece
+        back to this (still synchronous) generator. The caller therefore receives
+        the first words within a fraction of the full generation time instead of
+        waiting for the whole answer.
+
+        Prompt-token accounting is trivial here: the streamer emits only the
+        completion, so the prompt prefix never has to be stripped.
+        """
         import torch
         from transformers import TextIteratorStreamer
 
         tokenizer, model = self._ensure_loaded()
         inputs = self._move_to_device(self._prepare_inputs(messages))
+        prompt_tokens = int(inputs["input_ids"].shape[-1])
         gen_kwargs = self._generation_kwargs(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
-            prompt_tokens=int(inputs["input_ids"].shape[-1]),
+            prompt_tokens=prompt_tokens,
         )
 
-        # The streamer timeout is the maximum gap between two yielded tokens,
-        # not the total budget: a large answer legitimately streams for minutes
-        # on CPU, so this only needs to be long enough to cover the slowest
-        # single forward pass.
         streamer = TextIteratorStreamer(
-            tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=600.0
+            tokenizer, skip_prompt=True, skip_special_tokens=True
         )
-        gen_kwargs.update(streamer=streamer, **inputs)
-
         error: list[BaseException] = []
 
         def _run() -> None:
             try:
                 with torch.inference_mode():
-                    model.generate(**gen_kwargs)
-            except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+                    model.generate(**inputs, streamer=streamer, **gen_kwargs)
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the caller
                 error.append(exc)
             finally:
+                # Always close the streamer; otherwise a failure on the worker
+                # thread would leave this generator blocked on ``for text in ...``.
                 streamer.end()
 
-        thread = threading.Thread(target=_run, name="qwen-stream", daemon=True)
-        thread.start()
-
-        for delta in streamer:
-            if delta:
-                yield delta
-        thread.join(timeout=5)
+        worker = threading.Thread(target=_run, name="llm-stream", daemon=True)
+        worker.start()
+        try:
+            for text in streamer:
+                if text:
+                    yield text
+        finally:
+            worker.join(timeout=1.0)
 
         if error:
-            raise LLMError(f"Streaming failed: {error[0]}", code="generation_failed")
-
-    # ------------------------------------------------------ structured output
-    def supports_structured_output(self) -> bool:
-        """True when ``outlines`` is importable (enables constrained decoding)."""
-        return self._outlines_available()
-
-    @staticmethod
-    def _outlines_available() -> bool:
-        try:
-            import outlines  # noqa: F401
-        except ImportError:  # pragma: no cover - optional dependency
-            return False
-        return True
-
-    def _build_outlines_model(self) -> Any | None:  # noqa: ANN401 - outlines type
-        """Wrap the loaded transformers model/tokenizer in an outlines model.
-
-        ``outlines.from_transformers`` returns a *model* wrapper (not a
-        generator); the output type is applied later via ``outlines.Generator``.
-        It reuses the already-loaded weights, so no second copy is created.
-        """
-        if self._outlines_model is not None:
-            return self._outlines_model
-
-        try:
-            import outlines
-        except ImportError:  # pragma: no cover - optional dependency
-            return None
-
-        tokenizer, model = self._ensure_loaded()
-        try:
-            self._outlines_model = outlines.from_transformers(model, tokenizer)
-        except Exception as exc:  # noqa: BLE001 - outlines API/version drift
-            logger.warning("outlines is installed but unusable: %s", exc)
-            self._outlines_model = None
-        return self._outlines_model
-
-    def generate_structured(
-        self,
-        messages: list[Message],
-        schema: type[Any],
-        *,
-        max_new_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        **kwargs: Any,
-    ) -> Any | None:
-        """Constrained generation: only tokens valid for ``schema`` are emitted.
-
-        ``outlines`` compiles the Pydantic model into a token-level state machine
-        and masks the logits at every step, so even a 0.5B model returns valid,
-        parseable JSON. The messages are passed as an ``outlines.inputs.Chat`` so
-        outlines renders them through the model's own chat template exactly once
-        (a bare string would be re-wrapped as a single user message, dropping the
-        system prompt and history).
-
-        Returns a validated ``schema`` instance, or ``None`` (so the caller falls
-        back to plain text) when outlines is unavailable or generation fails.
-        """
-        import torch
-
-        outlines_model = self._build_outlines_model()
-        if outlines_model is None:
-            return None
-
-        try:
-            import outlines
-            from outlines.inputs import Chat
-
-            # A Generator caches the compiled logits processor, so build one per
-            # schema and reuse it across calls.
-            generator = self._outlines_generators.get(schema)
-            if generator is None:
-                generator = outlines.Generator(outlines_model, schema)
-                self._outlines_generators[schema] = generator
-
-            chat = Chat([message.to_dict() for message in messages])
-            resolved_temperature = (
-                self._config.llm_temperature if temperature is None else temperature
-            )
-            gen_kwargs: dict[str, Any] = {
-                "max_new_tokens": self._resolve_generation_budget(
-                    max_new_tokens, self._count_prompt_tokens(messages)
-                ),
-                "do_sample": resolved_temperature > 0,
-            }
-            if resolved_temperature > 0:
-                gen_kwargs["temperature"] = max(resolved_temperature, 1e-2)
-            if top_p is not None:
-                gen_kwargs["top_p"] = top_p
-
-            with torch.inference_mode():
-                raw = generator(chat, **gen_kwargs)
-        except Exception as exc:  # noqa: BLE001 - degrade to plain text
-            logger.warning("Structured generation failed, falling back: %s", exc)
-            return None
-
-        return self._coerce_schema(schema, raw)
-
-    @staticmethod
-    def _coerce_schema(schema: type[Any], raw: Any) -> Any | None:
-        """Parse outlines' JSON string output into ``schema`` (or ``None``)."""
-        if not isinstance(raw, str) or not raw.strip():
-            return None
-        try:
-            return schema.model_validate_json(raw)
-        except Exception:  # noqa: BLE001 - last-resort parse before giving up
-            try:
-                import json
-
-                return schema(**json.loads(raw))
-            except Exception:  # noqa: BLE001 - caller falls back to plain text
-                return None
+            raise LLMError(
+                f"Generation failed: {error[0]}", code="generation_failed"
+            ) from error[0]
 
     def health(self) -> dict[str, Any]:
         loaded = self._tokenizer is not None and self._model is not None
@@ -432,7 +467,8 @@ class TransformersLLMProvider(LLMProvider):
             "status": "ok",
             "loaded": loaded,
             "device": self._device,
-            "structured_output": self._outlines_available(),
+            "quantized_4bit": self._quantized,
+            "dtype": (self._config.llm_torch_dtype or "float32"),
         }
 
     def warmup(self) -> None:

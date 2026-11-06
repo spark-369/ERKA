@@ -58,10 +58,9 @@ class LLMProvider(abc.ABC):
         top_p: float | None = None,
         **kwargs: Any,
     ) -> GenerationResult:
-        """Return a full completion for ``messages``."""
+        """Return a full, synchronous completion for ``messages``."""
 
-    @abc.abstractmethod
-    def stream(
+    def generate_stream(
         self,
         messages: list[Message],
         *,
@@ -70,38 +69,27 @@ class LLMProvider(abc.ABC):
         top_p: float | None = None,
         **kwargs: Any,
     ) -> Iterator[str]:
-        """Yield incremental text deltas (used by the SSE endpoints)."""
+        """Yield the completion incrementally, piece by piece.
+
+        The default implementation calls :meth:`generate` once and yields the
+        whole text, so every provider supports streaming without extra work.
+        Real backends override this to emit output *as it is produced*, which is
+        what makes the SSE endpoint feel fast: the first words reach the client
+        in a fraction of the time the full answer would take to generate.
+        """
+        result = self.generate(
+            messages,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            **kwargs,
+        )
+        if result.text:
+            yield result.text
 
     def health(self) -> dict[str, Any]:
         """Optional readiness probe reported by ``/health``."""
         return {"provider": type(self).__name__, "model": self.model_name, "status": "ok"}
-
-    # ------------------------------------------------------ structured output
-    def supports_structured_output(self) -> bool:
-        """Whether :meth:`generate_structured` can constrain the decoder.
-
-        Defaults to ``False`` so providers that cannot do it (and third-party
-        implementations) keep working unchanged.
-        """
-        return False
-
-    def generate_structured(
-        self,
-        messages: list[Message],
-        schema: type[Any],
-        *,
-        max_new_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        **kwargs: Any,
-    ) -> Any | None:
-        """Generate output conforming to ``schema`` (a Pydantic model class).
-
-        Returns a validated instance of ``schema``, or ``None`` when the provider
-        cannot do constrained decoding. Callers must handle ``None`` by falling
-        back to plain-text generation.
-        """
-        return None
 
     def warmup(self) -> None:
         """Optionally pre-load weights (no-op by default)."""

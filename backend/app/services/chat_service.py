@@ -34,28 +34,6 @@ SNIPPET_LENGTH = 300
 TITLE_LENGTH = 60
 
 
-def _chunk_text(text: str, *, size: int = 24) -> Iterator[str]:
-    """Split ``text`` into progressive chunks without altering it.
-
-    Structured output is produced in one shot (no token stream), so it is sliced
-    here purely so the UI still types itself out. ``"".join(_chunk_text(t)) == t``
-    always holds, which keeps the SSE contract intact for clients that
-    reconstruct the answer from the ``token`` events.
-    """
-    if not text:
-        return
-    remaining = text
-    while remaining:
-        if len(remaining) <= size:
-            yield remaining
-            return
-        cut = remaining.rfind(" ", 0, size)
-        if cut <= 0:
-            cut = size
-        yield remaining[:cut]
-        remaining = remaining[cut:]
-
-
 class ChatService:
     """Conversation history + RAG orchestration for a single request."""
 
@@ -246,16 +224,12 @@ class ChatService:
         latency_ms: int,
         token_count: int = 0,
         cited_indices: Sequence[int] | None = None,
-        key_points: Sequence[str] | None = None,
-        structured: bool = False,
     ) -> Message:
-        """Store the assistant's turn together with its structured extras.
+        """Store the assistant's turn together with its retrieved sources.
 
         Citations are normalised through :meth:`to_source_references` so the rows
         written here are byte-for-byte the same shape the API returns to the
-        client. The structured extras (``key_points`` + the ``structured`` flag)
-        ride along in the same JSON envelope so history can re-render exactly
-        like a fresh answer.
+        client.
         """
         envelope = {
             "sources": [
@@ -264,8 +238,6 @@ class ChatService:
                     sources, cited_indices=cited_indices
                 )
             ],
-            "key_points": list(key_points or []),
-            "structured": bool(structured),
         }
         message = self._messages.add_message(
             conversation_id=conversation_id,
@@ -297,11 +269,9 @@ class ChatService:
             max_new_tokens=request.max_new_tokens,
         )
 
-        # Citations + key points come from the structured-output path (1-based
-        # prompt indices for citations).
+        # Citations are 1-based prompt indices from the answer's bracketed
+        # context headers.
         cited_indices = list(result.metadata.get("citations") or [])
-        key_points = list(result.metadata.get("key_points") or [])
-        structured = bool(result.metadata.get("structured"))
 
         message = self.persist_assistant_message(
             conversation.id,
@@ -311,19 +281,15 @@ class ChatService:
             latency_ms=result.latency_ms,
             token_count=result.completion_tokens,
             cited_indices=cited_indices,
-            key_points=key_points,
-            structured=structured,
         )
         return {
             "conversation_id": conversation.id,
             "message_id": message.id,
             "answer": result.answer,
-            "key_points": key_points,
             "sources": self.to_source_references(
                 result.sources, cited_indices=cited_indices
             ),
             "citations": self._citation_offsets(cited_indices, len(result.sources)),
-            "structured": structured,
             "model_name": result.model_name,
             "latency_ms": result.latency_ms,
             "token_count": result.completion_tokens,
@@ -367,53 +333,34 @@ class ChatService:
         yield ChatStreamEvent.start(conversation.id, model_name)
         yield ChatStreamEvent.sources(self.to_source_references(sources))
 
-        messages = self.chain.build_messages(
-            request.question, sources=sources, history=history
-        )
+        # Real token streaming: the provider yields fragments *as the model
+        # produces them*, so the client renders the answer live instead of
+        # waiting for the full completion. Fragments are accumulated so the
+        # persisted answer and the ``done`` frame are byte-identical to what the
+        # client received.
+        pieces: list[str] = []
+        token_index = 0
+        try:
+            for piece in self.chain.build_stream_tokens(
+                request.question,
+                sources=sources,
+                history=history,
+                temperature=request.temperature,
+                max_new_tokens=request.max_new_tokens,
+            ):
+                if not piece:
+                    continue
+                pieces.append(piece)
+                yield ChatStreamEvent.token(piece, token_index)
+                token_index += 1
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client
+            logger.exception("Generation failed for conversation %s", conversation.id)
+            yield ChatStreamEvent.error(
+                f"Generation failed: {exc}", code="generation_error"
+            )
+            return
 
-        # Prefer schema-constrained generation so the answer reads like prose
-        # (not a dump of raw chunks). The structured payload is complete, so it
-        # is chunked into ``token`` events purely for a progressive UI; when
-        # structured output is unavailable we fall back to true token streaming.
-        payload = self.chain.generate_structured(
-            messages,
-            temperature=request.temperature,
-            max_new_tokens=request.max_new_tokens,
-        )
-
-        if payload is not None:
-            answer = payload.answer.strip()
-            for index, chunk in enumerate(_chunk_text(answer)):
-                yield ChatStreamEvent.token(chunk, index)
-            cited_indices = list(payload.cited_indices())
-            key_points = payload.points()
-            structured = True
-        else:
-            parts: list[str] = []
-            index = 0
-            try:
-                for delta in self.chain.llm.stream(
-                    messages,
-                    temperature=request.temperature,
-                    max_new_tokens=request.max_new_tokens,
-                ):
-                    if not delta:
-                        continue
-                    parts.append(delta)
-                    yield ChatStreamEvent.token(delta, index)
-                    index += 1
-            except Exception as exc:  # noqa: BLE001 - surfaced to the client
-                logger.exception("Streaming failed for conversation %s", conversation.id)
-                yield ChatStreamEvent.error(
-                    f"Generation failed: {exc}", code="generation_error"
-                )
-                return
-            answer = "".join(parts).strip()
-            # Plain-text fallback: citations/key points are only reliable from
-            # the structured path, so none are claimed here.
-            cited_indices = []
-            key_points = []
-            structured = False
+        answer = "".join(pieces).strip()
 
         latency_ms = int((time.perf_counter() - started) * 1000)
         token_count = self.chain.llm.count_tokens(answer)
@@ -426,9 +373,7 @@ class ChatService:
                 model_name=model_name,
                 latency_ms=latency_ms,
                 token_count=token_count,
-                cited_indices=cited_indices,
-                key_points=key_points,
-                structured=structured,
+                cited_indices=[],
             )
         except Exception as exc:  # noqa: BLE001 - answer already streamed
             logger.exception("Failed to persist assistant message")
@@ -443,7 +388,5 @@ class ChatService:
             answer=answer,
             latency_ms=latency_ms,
             token_count=token_count,
-            citations=self._citation_offsets(cited_indices, len(sources)),
-            key_points=key_points,
-            structured=structured,
+            citations=[],
         )

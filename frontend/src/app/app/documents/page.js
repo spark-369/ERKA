@@ -2,11 +2,11 @@
 
 /**
  * Documents console: drag-and-drop upload, ingestion monitoring, chunk
- * inspection and lifecycle actions (rename / reindex / delete).
+ * inspection and lifecycle actions (edit / reindex / delete).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DocumentsIcon, RefreshIcon, TrashIcon, UploadIcon } from "@/components/icons";
+import { DocumentsIcon, EditIcon, RefreshIcon, TrashIcon, UploadIcon } from "@/components/icons";
 import {
   Alert,
   Badge,
@@ -16,10 +16,12 @@ import {
   EmptyState,
   Input,
   Modal,
+  PageHeader,
   ProgressBar,
   SearchInput,
   Select,
   Skeleton,
+  StatCard,
   StatusBadge,
   formatBytes,
   formatDate,
@@ -40,21 +42,7 @@ const STATUS_OPTIONS = [
 ];
 
 function StatTile({ label, value, tone = "slate" }) {
-  const tones = {
-    slate: "text-slate-900 dark:text-slate-100",
-    green: "text-emerald-600 dark:text-emerald-400",
-    amber: "text-amber-600 dark:text-amber-400",
-    blue: "text-blue-600 dark:text-blue-400",
-    red: "text-red-600 dark:text-red-400",
-  };
-  return (
-    <Card className="px-4 py-3">
-      <p className="text-xs font-medium tracking-wide text-slate-500 uppercase">{label}</p>
-      <p className={`mt-1 text-xl font-semibold tabular-nums ${tones[tone]}`}>
-        {formatNumber(value)}
-      </p>
-    </Card>
-  );
+  return <StatCard label={label} value={value} tone={tone} />;
 }
 
 function UploadZone({ onUpload, uploading }) {
@@ -205,8 +193,7 @@ export default function DocumentsPage() {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState({});
   const [chunkDoc, setChunkDoc] = useState(null);
-  const [renameDoc, setRenameDoc] = useState(null);
-  const [renameValue, setRenameValue] = useState("");
+  const [editDoc, setEditDoc] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
 
   const load = useCallback(async () => {
@@ -298,13 +285,28 @@ export default function DocumentsPage() {
     }
   }
 
-  async function submitRename(event) {
+  function openEdit(doc) {
+    setEditDoc({
+      id: doc.id,
+      original_filename: doc.original_filename,
+      tags: doc.tags || "",
+      collection: doc.collection || "",
+    });
+  }
+
+  async function submitEdit(event) {
     event.preventDefault();
-    if (!renameDoc) return;
+    if (!editDoc) return;
     try {
-      await api.updateDocument(renameDoc.id, { original_filename: renameValue });
-      toast.success("Document renamed.");
-      setRenameDoc(null);
+      const payload = {};
+      if (editDoc.original_filename.trim()) {
+        payload.original_filename = editDoc.original_filename.trim();
+      }
+      payload.tags = editDoc.tags.trim() || null;
+      if (editDoc.collection.trim()) payload.collection = editDoc.collection.trim();
+      await api.updateDocument(editDoc.id, payload);
+      toast.success("Document updated.");
+      setEditDoc(null);
       await load();
     } catch (err) {
       toast.error(err.message);
@@ -313,18 +315,16 @@ export default function DocumentsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Documents</h1>
-          <p className="text-sm text-slate-500">
-            Upload domain documents and monitor their ingestion into the vector store.
-          </p>
-        </div>
-        <Button variant="secondary" onClick={load} loading={loading}>
-          <RefreshIcon className="h-4 w-4" />
-          Refresh
-        </Button>
-      </header>
+      <PageHeader
+        title="Documents"
+        description="Upload domain documents and monitor their ingestion into the knowledge base."
+        actions={
+          <Button variant="secondary" onClick={load} loading={loading}>
+            <RefreshIcon className="h-4 w-4" />
+            Refresh
+          </Button>
+        }
+      />
 
       <Alert tone="error" onDismiss={() => setError("")}>
         {error}
@@ -400,6 +400,7 @@ export default function DocumentsPage() {
                   <th className="px-3 py-3 font-medium">Status</th>
                   <th className="px-3 py-3 font-medium">Progress</th>
                   <th className="px-3 py-3 font-medium">Chunks</th>
+                  <th className="px-3 py-3 font-medium">Tags</th>
                   <th className="px-3 py-3 font-medium">Size</th>
                   <th className="px-3 py-3 font-medium">Uploaded</th>
                   <th className="px-5 py-3 text-right font-medium">Actions</th>
@@ -439,6 +440,24 @@ export default function DocumentsPage() {
                         <ProgressBar value={percent} />
                       </td>
                       <td className="px-3 py-3 tabular-nums">{formatNumber(doc.chunk_count)}</td>
+                      <td className="max-w-[10rem] px-3 py-3">
+                        {doc.tags ? (
+                          <div className="flex flex-wrap gap-1">
+                            {doc.tags
+                              .split(",")
+                              .map((tag) => tag.trim())
+                              .filter(Boolean)
+                              .slice(0, 3)
+                              .map((tag) => (
+                                <Badge key={tag} tone="slate">
+                                  {tag}
+                                </Badge>
+                              ))}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-400">—</span>
+                        )}
+                      </td>
                       <td className="px-3 py-3 tabular-nums">{formatBytes(doc.size_bytes)}</td>
                       <td className="px-3 py-3 text-xs whitespace-nowrap text-slate-500">
                         {formatDate(doc.created_at)}
@@ -448,13 +467,10 @@ export default function DocumentsPage() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => {
-                              setRenameDoc(doc);
-                              setRenameValue(doc.original_filename);
-                            }}
-                            title="Rename"
+                            onClick={() => openEdit(doc)}
+                            title="Edit"
                           >
-                            Rename
+                            <EditIcon className="h-3.5 w-3.5" />
                           </Button>
                           <Button
                             variant="ghost"
@@ -513,26 +529,44 @@ export default function DocumentsPage() {
       <ChunkViewer document={chunkDoc} onClose={() => setChunkDoc(null)} />
 
       <Modal
-        open={Boolean(renameDoc)}
-        onClose={() => setRenameDoc(null)}
-        title="Rename document"
-        description="Only the display name changes; the stored file and vectors are untouched."
+        open={Boolean(editDoc)}
+        onClose={() => setEditDoc(null)}
+        title="Edit document"
+        description="Update the display name, tags and collection. The stored file and vectors are untouched."
         footer={
           <>
-            <Button variant="secondary" onClick={() => setRenameDoc(null)}>
+            <Button variant="secondary" onClick={() => setEditDoc(null)}>
               Cancel
             </Button>
-            <Button type="submit" form="rename-form">
-              Save
+            <Button type="submit" form="edit-document-form">
+              Save changes
             </Button>
           </>
         }
       >
-        <form id="rename-form" onSubmit={submitRename}>
+        <form id="edit-document-form" onSubmit={submitEdit} className="flex flex-col gap-4">
           <Input
             label="Display name"
-            value={renameValue}
-            onChange={(event) => setRenameValue(event.target.value)}
+            value={editDoc?.original_filename || ""}
+            onChange={(event) =>
+              setEditDoc((prev) => ({ ...prev, original_filename: event.target.value }))
+            }
+            required
+          />
+          <Input
+            label="Tags"
+            value={editDoc?.tags || ""}
+            hint="Comma-separated, e.g. policies, 2024, finance"
+            placeholder="Comma-separated tags"
+            onChange={(event) => setEditDoc((prev) => ({ ...prev, tags: event.target.value }))}
+          />
+          <Input
+            label="Collection"
+            value={editDoc?.collection || ""}
+            hint="Groups documents for optional scoped retrieval."
+            onChange={(event) =>
+              setEditDoc((prev) => ({ ...prev, collection: event.target.value }))
+            }
           />
         </form>
       </Modal>

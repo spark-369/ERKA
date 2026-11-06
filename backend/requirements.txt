@@ -27,7 +27,13 @@ PyJWT>=2.10,<3.0
 bcrypt>=4.2,<5.0
 
 # --- Cache / queue -----------------------------------------------------------
-redis>=5.2,<6.0
+# redis-py 6.1+ is required by Celery 5.7's bundled kombu: its Redis transport
+# raises `VersionMismatch('Redis transport requires redis-py versions 6.1.0 or
+# later')` at worker startup with older clients. The API surface this project
+# uses (get/set/setex/delete/scan_iter/pipeline/zadd/zremrangebyscore/zcard/
+# zrange/incrby/expire) is unchanged between redis-py 5 and 6, so the bump is
+# drop-in.
+redis>=6.1,<7.0
 celery>=5.4,<6.0
 
 # --- Vector storage (embedded + persistent, no server required) --------------
@@ -63,9 +69,9 @@ tokenizers>=0.20,<0.22
 accelerate>=1.2,<2.0
 sentence-transformers>=3.2,<4.0
 safetensors>=0.4.5
-# Structured output: constrains decoding to a JSON schema (masked logits) so the
-# 0.5B model returns reliable, parseable answers with explicit citations.
-outlines>=1.0,<2.0
+# The model loads at full precision (float32 - see LLM_TORCH_DTYPE in config/.env)
+# - no quantization - so bitsandbytes is NOT required. It is intentionally omitted
+# to avoid the CPU-only-wheel pitfalls (the default wheel is CUDA-only).
 # torch is installed separately in the Dockerfile from the CPU-only index.
 # Local (non-Docker) installs:  pip install torch --index-url https://download.pytorch.org/whl/cpu
 

@@ -6,10 +6,15 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   AlertIcon,
+  ArrowRightIcon,
+  ChatIcon,
   CheckIcon,
   DashboardIcon,
+  DocumentsIcon,
+  HeartPulseIcon,
   RefreshIcon,
 } from "@/components/icons";
 import {
@@ -19,31 +24,19 @@ import {
   Card,
   CardHeader,
   EmptyState,
+  PageHeader,
   ProgressBar,
   Skeleton,
+  StatCard,
   TaskStatusBadge,
-  formatNumber,
   formatRelative,
 } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useToast } from "@/lib/toast";
 
 function CounterTile({ label, value, tone = "slate" }) {
-  const tones = {
-    slate: "text-slate-900 dark:text-slate-100",
-    green: "text-emerald-600 dark:text-emerald-400",
-    amber: "text-amber-600 dark:text-amber-400",
-    blue: "text-blue-600 dark:text-blue-400",
-    red: "text-red-600 dark:text-red-400",
-  };
-  return (
-    <Card className="px-4 py-3">
-      <p className="text-xs font-medium tracking-wide text-slate-500 uppercase">{label}</p>
-      <p className={`mt-1 text-2xl font-semibold tabular-nums ${tones[tone]}`}>
-        {formatNumber(value)}
-      </p>
-    </Card>
-  );
+  return <StatCard label={label} value={value} tone={tone} />;
 }
 
 function HealthRow({ name, value }) {
@@ -73,11 +66,13 @@ function HealthRow({ name, value }) {
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const toast = useToast();
   const [stats, setStats] = useState(null);
   const [health, setHealth] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [probing, setProbing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -102,22 +97,43 @@ export default function DashboardPage() {
     load();
   }, [load]);
 
+  async function dispatchProbe() {
+    setProbing(true);
+    try {
+      await api.dispatchWorkerHealthProbe();
+      toast.success("Worker health probe dispatched.");
+      await load();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setProbing(false);
+    }
+  }
+
   const documents = stats?.documents || {};
 
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-          <p className="text-sm text-slate-500">
+      <PageHeader
+        title="Dashboard"
+        description={
+          <>
             Signed in as {user?.email} · <span className="capitalize">{user?.role}</span>
-          </p>
-        </div>
-        <Button variant="secondary" onClick={load} loading={loading}>
-          <RefreshIcon className="h-4 w-4" />
-          Refresh
-        </Button>
-      </header>
+          </>
+        }
+        actions={
+          <>
+            <Button variant="secondary" onClick={dispatchProbe} loading={probing}>
+              <HeartPulseIcon className="h-4 w-4" />
+              Run worker probe
+            </Button>
+            <Button variant="secondary" onClick={load} loading={loading}>
+              <RefreshIcon className="h-4 w-4" />
+              Refresh
+            </Button>
+          </>
+        }
+      />
 
       <Alert tone="error" onDismiss={() => setError("")}>
         {error}
@@ -130,7 +146,45 @@ export default function DashboardPage() {
         <CounterTile label="Processing" value={documents.processing ?? 0} tone="blue" />
         <CounterTile label="Pending" value={documents.pending ?? 0} tone="amber" />
         <CounterTile label="Failed" value={documents.failed ?? 0} tone="red" />
-        <CounterTile label="Conversations" value={stats?.conversations ?? 0} />
+        <CounterTile label="Conversations" value={stats?.conversations ?? 0} tone="brand" />
+      </section>
+
+      {/* ---------------------------------------------------------- quick links */}
+      <section className="grid gap-3 sm:grid-cols-2">
+        <Link
+          href="/app/documents"
+          className="group flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white px-4 py-3 transition-colors hover:border-brand-300 hover:bg-brand-50/40 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-brand-800 dark:hover:bg-brand-950/20"
+        >
+          <span className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-950/50 dark:text-brand-400">
+              <DocumentsIcon className="h-4 w-4" />
+            </span>
+            <span className="flex flex-col">
+              <span className="text-sm font-medium">Manage documents</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                Upload, tag and re-index your knowledge base
+              </span>
+            </span>
+          </span>
+          <ArrowRightIcon className="h-4 w-4 text-slate-400 transition-transform group-hover:translate-x-0.5" />
+        </Link>
+        <Link
+          href="/app/chat"
+          className="group flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white px-4 py-3 transition-colors hover:border-brand-300 hover:bg-brand-50/40 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-brand-800 dark:hover:bg-brand-950/20"
+        >
+          <span className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-950/50 dark:text-brand-400">
+              <ChatIcon className="h-4 w-4" />
+            </span>
+            <span className="flex flex-col">
+              <span className="text-sm font-medium">Start a chat</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                Ask questions and get cited, streamed answers
+              </span>
+            </span>
+          </span>
+          <ArrowRightIcon className="h-4 w-4 text-slate-400 transition-transform group-hover:translate-x-0.5" />
+        </Link>
       </section>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -170,7 +224,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader
             title="Background tasks"
-            description="Durable audit trail of dispatched Celery work."
+            description="Durable audit trail of dispatched background work."
           />
           {loading && tasks.length === 0 ? (
             <div className="flex flex-col gap-2 p-5">

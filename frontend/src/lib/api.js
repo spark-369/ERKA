@@ -216,6 +216,8 @@ export const api = {
   listTasks: (params = {}) =>
     request(`/tasks?${new URLSearchParams(params).toString()}`),
   getTask: (id) => request(`/tasks/${id}`),
+  dispatchWorkerHealthProbe: () =>
+    request("/tasks/maintenance/health", { method: "POST" }),
 
   // -------------------------------------------------------------- health ---
   health: () => request("/health", { auth: false }),

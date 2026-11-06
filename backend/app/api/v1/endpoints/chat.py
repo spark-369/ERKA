@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Iterator
+import threading
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
@@ -46,8 +48,15 @@ def _sse_frame(event: ChatStreamEvent) -> str:
     return f"event: {event.type}\ndata: {payload}\n\n"
 
 
-def _stream_body(payload: ChatCompletionRequest, user_id: str) -> Iterator[str]:
-    """Generator bridging the chat service to SSE frames.
+async def _stream_body(payload: ChatCompletionRequest, user_id: str) -> AsyncIterator[str]:
+    """Async generator bridging the blocking chat service to SSE frames.
+
+    Generation is CPU-bound and synchronous (as is the SQLAlchemy session), so
+    the whole service generator runs on a dedicated worker thread and its frames
+    are marshalled back to the event loop through an :class:`asyncio.Queue`.
+    That keeps ``await``-based streaming without ever blocking the event loop,
+    and it keeps every database call on a single thread (SQLAlchemy sessions are
+    not thread-safe).
 
     The stream owns its own database session: FastAPI tears down request-scoped
     ``yield`` dependencies *before* a ``StreamingResponse`` body is consumed, so
@@ -56,17 +65,46 @@ def _stream_body(payload: ChatCompletionRequest, user_id: str) -> Iterator[str]:
     from app.db.session import get_session_factory
 
     session = get_session_factory()()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[object] = asyncio.Queue()
+    _SENTINEL = object()
+
+    def _produce() -> None:
+        def _emit(item: object) -> None:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:
+                # The event loop closed (client disconnected); nothing to do.
+                pass
+
+        try:
+            service = ChatService(session)
+            for event in service.stream(payload, user_id):
+                _emit(event)
+        except Exception:  # noqa: BLE001 - never leak a broken stream
+            logger.exception("Unhandled error while streaming a chat response")
+            _emit(
+                ChatStreamEvent.error(
+                    "The stream ended unexpectedly.", code="stream_error"
+                )
+            )
+        finally:
+            _emit(_SENTINEL)
+
+    worker = threading.Thread(target=_produce, name="sse-producer", daemon=True)
+    worker.start()
     try:
-        service = ChatService(session)
-        for event in service.stream(payload, user_id):
-            yield _sse_frame(event)
-    except Exception:  # noqa: BLE001 - never leak a broken stream
-        logger.exception("Unhandled error while streaming a chat response")
-        yield _sse_frame(
-            ChatStreamEvent.error("The stream ended unexpectedly.", code="stream_error")
-        )
+        while True:
+            event = await queue.get()
+            if event is _SENTINEL:
+                break
+            yield _sse_frame(event)  # type: ignore[arg-type]
     finally:
+        # Runs on normal completion, client disconnect (task cancellation) and
+        # generator close: always release the session and let the worker wind
+        # down. The worker is a daemon thread, so a slow drain cannot hang exit.
         session.close()
+        worker.join(timeout=5.0)
 
 
 @router.post(

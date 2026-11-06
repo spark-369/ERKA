@@ -20,7 +20,7 @@ export const metadata = {
     template: "%s · RAG Knowledge Assistant",
   },
   description:
-    "Domain-specific enterprise knowledge assistant powered by a local Qwen2.5 model and an embedded ChromaDB vector store.",
+    "Domain-specific enterprise knowledge assistant that answers questions from your own documents, with citations and streamed responses.",
   applicationName: "RAG Knowledge Assistant",
 };
 

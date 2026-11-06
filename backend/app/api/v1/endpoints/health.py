@@ -84,10 +84,6 @@ def readiness(
 
         provider = get_llm_provider()
         dependencies["llm"] = provider.health()["status"]
-        if settings.llm_structured_output:
-            dependencies["structured_output"] = (
-                "ok" if provider.supports_structured_output() else "unavailable (outlines missing)"
-            )
     except Exception as exc:  # noqa: BLE001
         dependencies["llm"] = f"error: {exc.__class__.__name__}"
 

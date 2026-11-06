@@ -210,3 +210,56 @@ export function ChevronDownIcon(props) {
     </Icon>
   );
 }
+
+export function EditIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </Icon>
+  );
+}
+
+export function TagIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+      <path d="M7 7h.01" />
+    </Icon>
+  );
+}
+
+export function ClockIcon(props) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </Icon>
+  );
+}
+
+export function LayersIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M12 2l9 5-9 5-9-5 9-5z" />
+      <path d="M3 12l9 5 9-5M3 17l9 5 9-5" />
+    </Icon>
+  );
+}
+
+export function HeartPulseIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 12 5a5.5 5.5 0 0 0-10 3.5c0 2.29 1.51 4.04 3 5.5l7 7z" />
+      <path d="M3.5 12h4l1.5-3 2 6 1.5-3h4" />
+    </Icon>
+  );
+}
+
+export function ArrowRightIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M5 12h14M13 6l6 6-6 6" />
+    </Icon>
+  );
+}
